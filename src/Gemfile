@@ -12,6 +12,7 @@ gem 'faraday'
 
 gem 'stack-service-base'
 gem 'slim'
+gem 'sqlite3'
 
 group :test do
   gem 'sqlite3'

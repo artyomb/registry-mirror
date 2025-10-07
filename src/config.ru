@@ -4,6 +4,7 @@ require 'faraday'
 require 'json'
 require 'digest'
 require 'slim'
+require 'sqlite3'
 
 require 'stack-service-base'
 
@@ -11,10 +12,27 @@ StackServiceBase.rack_setup self
 
 UPSTREAM = ENV.fetch('UPSTREAM', 'https://registry-1.docker.io')
 TTL      = ENV.fetch('TTL', '3600').to_i
-CACHE    = ENV.fetch('CACHE_DIR', 'cache')
+CACHE_DIR = ENV.fetch('CACHE_DIR', 'cache')
+CACHE_DB = File.join(CACHE_DIR, 'registry_cache.db')
 CLEANUP_INTERVAL = ENV.fetch('CLEANUP_INTERVAL', '300').to_i  # 5 minutes default
 
-FileUtils.mkdir_p(CACHE)
+FileUtils.mkdir_p(CACHE_DIR)
+
+# Initialize SQLite database with shared connection
+DB = SQLite3::Database.new(CACHE_DB)
+DB.busy_timeout = 5000  # 5 second timeout for locks
+DB.execute <<-SQL
+  CREATE TABLE IF NOT EXISTS cache_entries (
+    uri TEXT PRIMARY KEY,
+    image_name TEXT,
+    tag TEXT,
+    cache_time INTEGER,
+    status INTEGER,
+    content_type TEXT,
+    headers TEXT,
+    body BLOB
+  );
+SQL
 
 helpers do
   # Track last cleanup time as a module method
@@ -65,26 +83,80 @@ helpers do
       nil
     end
   end
-  def cache_key
-    raw = "#{request.request_method} #{request.path}?#{request.query_string}"
-    Digest::SHA256.hexdigest(raw)
+  def parse_docker_uri(uri)
+    # Parse Docker registry URI to extract image_name and tag
+    # Examples:
+    # /v2/library/postgres/manifests/16 -> image_name: "library/postgres", tag: "16"
+    # /v2/library/alpine/blobs/sha256:... -> image_name: "library/alpine", tag: nil
+    # /v2/ -> image_name: nil, tag: nil
+    
+    return { image_name: nil, tag: nil } unless uri.start_with?('/v2/')
+    
+    parts = uri.split('/').reject(&:empty?)
+    return { image_name: nil, tag: nil } if parts.length < 3
+    
+    # Remove 'v2' prefix
+    parts.shift
+    
+    if parts.length >= 3
+      if parts[-2] == 'manifests'
+        # Manifest request: /v2/namespace/repo/manifests/tag
+        image_name = parts[0..-3].join('/')
+        tag = parts[-1]
+      elsif parts[-2] == 'blobs'
+        # Blob request: /v2/namespace/repo/blobs/digest
+        image_name = parts[0..-3].join('/')
+        tag = nil
+      else
+        # Other requests
+        image_name = parts.join('/')
+        tag = nil
+      end
+    else
+      image_name = parts.join('/')
+      tag = nil
+    end
+    
+    { image_name: image_name, tag: tag }
   end
 
-  def body_path;   File.join(CACHE, "#{cache_key}.body");   end
-  def meta_path;   File.join(CACHE, "#{cache_key}.meta");   end
   def cached?
-    return false unless File.exist?(body_path) && File.exist?(meta_path)
-    (Time.now - File.mtime(body_path)) < TTL
+    result = DB.execute(
+      "SELECT cache_time FROM cache_entries WHERE uri = ? AND cache_time > ?",
+      [request.fullpath, Time.now.to_i - TTL]
+    )
+    !result.empty?
   end
 
-  def load_meta
-    JSON.parse(File.read(meta_path)) rescue {}
+  def cache_get
+    result = DB.execute(
+      "SELECT status, headers, body FROM cache_entries WHERE uri = ? AND cache_time > ?",
+      [request.fullpath, Time.now.to_i - TTL]
+    ).first
+    
+    return nil unless result
+    
+    status, headers_json, body = result
+    headers = JSON.parse(headers_json)
+    [status, headers, body]
   end
 
   def save_cache(status, headers, body)
-    File.write(body_path, body, mode: "wb")
-    meta = { "status" => status, "headers" => { "Content-Type" => headers['content-type'] } }
-    File.write(meta_path, JSON.dump(meta))
+    parsed = parse_docker_uri(request.fullpath)
+    
+    DB.execute(
+      "INSERT OR REPLACE INTO cache_entries (uri, image_name, tag, cache_time, status, content_type, headers, body) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      [
+        request.fullpath,
+        parsed[:image_name],
+        parsed[:tag],
+        Time.now.to_i,
+        status,
+        headers['content-type'],
+        JSON.dump({ "Content-Type" => headers['content-type'] }),
+        body
+      ]
+    )
     
     # Trigger cleanup if interval has passed
     maybe_cleanup_cache
@@ -118,66 +190,97 @@ helpers do
   end
 
   def cleanup_expired_cache
-    return unless Dir.exist?(CACHE)
+    # Count expired entries before deletion
+    expired_count = DB.execute(
+      "SELECT COUNT(*) FROM cache_entries WHERE cache_time <= ?",
+      [Time.now.to_i - TTL]
+    ).first[0]
     
-    cleaned_count = 0
-    total_size_freed = 0
+    # Calculate total size freed (approximate)
+    total_size_freed = DB.execute(
+      "SELECT SUM(LENGTH(body)) FROM cache_entries WHERE cache_time <= ?",
+      [Time.now.to_i - TTL]
+    ).first[0] || 0
     
-    Dir.glob(File.join(CACHE, "*.body")).each do |body_file|
-      meta_file = body_file.sub('.body', '.meta')
-      
-      # Check if cache entry is expired
-      if File.exist?(body_file) && (Time.now - File.mtime(body_file)) >= TTL
-        begin
-          # Calculate size before deletion
-          body_size = File.size(body_file) rescue 0
-          meta_size = File.size(meta_file) rescue 0
-          
-          # Remove both files
-          File.delete(body_file) if File.exist?(body_file)
-          File.delete(meta_file) if File.exist?(meta_file)
-          
-          cleaned_count += 1
-          total_size_freed += body_size + meta_size
-          
-          puts "DEBUG: Cleaned expired cache entry: #{File.basename(body_file)}"
-        rescue => e
-          puts "ERROR: Failed to clean #{body_file}: #{e.message}"
-        end
-      end
+    # Delete expired entries
+    DB.execute(
+      "DELETE FROM cache_entries WHERE cache_time <= ?",
+      [Time.now.to_i - TTL]
+    )
+    
+    if expired_count > 0
+      puts "Cache cleanup: Removed #{expired_count} expired entries, freed #{total_size_freed} bytes"
     end
     
-    if cleaned_count > 0
-      puts "Cache cleanup: Removed #{cleaned_count} expired entries, freed #{total_size_freed} bytes"
+    expired_count
+  end
+
+  def format_time_ago(timestamp)
+    seconds_ago = Time.now.to_i - timestamp
+    if seconds_ago < 60
+      "#{seconds_ago}s ago"
+    elsif seconds_ago < 3600
+      "#{seconds_ago / 60}m ago"
+    elsif seconds_ago < 86400
+      "#{seconds_ago / 3600}h ago"
+    else
+      "#{seconds_ago / 86400}d ago"
+    end
+  end
+
+  def format_bytes(bytes)
+    return "0 B" if bytes == 0
+    
+    units = ['B', 'KB', 'MB', 'GB']
+    size = bytes.to_f
+    unit_index = 0
+    
+    while size >= 1024 && unit_index < units.length - 1
+      size /= 1024
+      unit_index += 1
     end
     
-    cleaned_count
+    "#{size.round(2)} #{units[unit_index]}"
   end
 
   def cache_stats
-    return { count: 0, size: 0 } unless Dir.exist?(CACHE)
+    # Get total entries
+    total_entries = DB.execute("SELECT COUNT(*) FROM cache_entries").first[0]
     
-    total_files = 0
-    total_size = 0
-    expired_files = 0
+    # Get total size
+    total_size = DB.execute("SELECT SUM(LENGTH(body)) FROM cache_entries").first[0] || 0
     
-    Dir.glob(File.join(CACHE, "*.body")).each do |body_file|
-      if File.exist?(body_file)
-        total_files += 1
-        total_size += File.size(body_file)
-        total_size += File.size(body_file.sub('.body', '.meta')) rescue 0
-        
-        # Check if expired
-        if (Time.now - File.mtime(body_file)) >= TTL
-          expired_files += 1
-        end
-      end
+    # Get expired entries
+    expired_entries = DB.execute(
+      "SELECT COUNT(*) FROM cache_entries WHERE cache_time <= ?",
+      [Time.now.to_i - TTL]
+    ).first[0]
+    
+    # Get image breakdown
+    image_stats = DB.execute(
+      "SELECT image_name, COUNT(*) as count, SUM(LENGTH(body)) as size FROM cache_entries WHERE image_name IS NOT NULL GROUP BY image_name ORDER BY count DESC LIMIT 10"
+    )
+    
+    # Get detailed entries for dashboard preview (top 5 recent)
+    detailed_entries = DB.execute(
+      "SELECT uri, image_name, tag, cache_time, status, LENGTH(body) as size FROM cache_entries ORDER BY cache_time DESC LIMIT 5"
+    ).map do |row|
+      {
+        uri: row[0],
+        image_name: row[1] || 'N/A',
+        tag: row[2] || 'N/A',
+        cached_ago: format_time_ago(row[3]),
+        status: row[4],
+        size_formatted: format_bytes(row[5])
+      }
     end
     
     {
-      count: total_files,
+      count: total_entries,
       size: total_size,
-      expired: expired_files
+      expired: expired_entries,
+      images: image_stats.map { |row| { name: row[0], count: row[1], size: row[2] } },
+      detailed_entries: detailed_entries
     }
   end
 end
@@ -198,7 +301,52 @@ get '/cache/stats' do
       total_size_mb: (stats[:size] / 1024.0 / 1024.0).round(2),
       expired_entries: stats[:expired],
       ttl_seconds: TTL,
-      cache_directory: CACHE
+      cache_database: CACHE_DB,
+      top_images: stats[:images],
+      detailed_entries: stats[:detailed_entries]
+    }
+  })
+end
+
+get '/cache/entries' do
+  content_type 'application/json'
+  page = (params[:page] || 1).to_i
+  per_page = (params[:per_page] || 10).to_i
+  offset = (page - 1) * per_page
+  
+  # Get total count
+  total_count = DB.execute("SELECT COUNT(*) FROM cache_entries").first[0]
+  
+  # Get paginated entries with details
+  entries = DB.execute(
+    "SELECT uri, image_name, tag, cache_time, status, content_type, LENGTH(body) as size 
+     FROM cache_entries 
+     ORDER BY cache_time DESC 
+     LIMIT ? OFFSET ?",
+    [per_page, offset]
+  )
+  
+  body JSON.dump({
+    entries: entries.map do |row|
+      {
+        uri: row[0],
+        image_name: row[1] || 'N/A',
+        tag: row[2] || 'N/A', 
+        cache_time: row[3],
+        cached_ago: format_time_ago(row[3]),
+        status: row[4],
+        content_type: row[5],
+        size_bytes: row[6],
+        size_formatted: format_bytes(row[6])
+      }
+    end,
+    pagination: {
+      page: page,
+      per_page: per_page,
+      total_count: total_count,
+      total_pages: (total_count.to_f / per_page).ceil,
+      has_next: page * per_page < total_count,
+      has_prev: page > 1
     }
   })
 end
@@ -217,9 +365,10 @@ end
 # GET only; extend as needed
 get '/*' do
   if cached?
-    meta = load_meta
-    content_type(meta.dig("headers","Content-Type") || 'application/octet-stream')
-    return send_file(body_path)
+    status_code, headers, body = cache_get
+    status status_code
+    content_type(headers["Content-Type"] || 'application/octet-stream')
+    return body
   end
 
   resp = conn.get(request.path, params, pass_headers)
