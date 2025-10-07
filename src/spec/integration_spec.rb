@@ -48,5 +48,14 @@ RSpec.describe 'Integration Tests' do
       get path, {}, headers
       expect(last_response.status).to eq(first_status)
     end
+
+    it 'proxies postgres:16 manifest requests' do
+      # Test manifest pull for library/postgres:16
+      get '/v2/library/postgres/manifests/16', {}, {
+        'HTTP_ACCEPT' => 'application/vnd.docker.distribution.manifest.v2+json'
+      }
+      expect([200, 401]).to include(last_response.status)
+      expect(last_response.content_type).to include('application')
+    end
   end
 end
