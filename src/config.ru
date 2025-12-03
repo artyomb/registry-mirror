@@ -15,6 +15,7 @@ TTL      = ENV.fetch('TTL', '3600').to_i
 CACHE_DIR = ENV.fetch('CACHE_DIR', 'cache')
 CACHE_DB = File.join(CACHE_DIR, 'registry_cache.db')
 CLEANUP_INTERVAL = ENV.fetch('CLEANUP_INTERVAL', '300').to_i  # 5 minutes default
+set :last_cleanup, Time.now - CLEANUP_INTERVAL
 
 FileUtils.mkdir_p(CACHE_DIR)
 
@@ -35,13 +36,13 @@ DB.execute <<-SQL
 SQL
 
 helpers do
-  # Track last cleanup time as a module method
-  def self.last_cleanup
-    @last_cleanup ||= Time.now - CLEANUP_INTERVAL
+  # Track last cleanup time via Sinatra settings to avoid helper scope lookups
+  def last_cleanup
+    settings.last_cleanup
   end
-  
-  def self.last_cleanup=(time)
-    @last_cleanup = time
+
+  def update_last_cleanup(time)
+    settings.last_cleanup = time
   end
   def conn
     @conn ||= Faraday.new(url: UPSTREAM) do |f|
@@ -168,7 +169,7 @@ helpers do
     Thread.new do
       begin
         cleanup_expired_cache
-        helpers.last_cleanup = Time.now
+        update_last_cleanup(Time.now)
       rescue => e
         puts "ERROR: Background cache cleanup failed: #{e.message}"
       end
@@ -176,7 +177,7 @@ helpers do
   end
 
   def should_cleanup?
-    (Time.now - helpers.last_cleanup) >= CLEANUP_INTERVAL
+    (Time.now - last_cleanup) >= CLEANUP_INTERVAL
   end
 
   def pass_headers
