@@ -197,6 +197,11 @@ html lang="en"
         }
         .cache-table tr:hover { background: #f8fafc; }
         .image-tag { font-weight: 600; color: var(--text); }
+        .image-tag-wrap {
+          overflow-wrap: anywhere;
+          word-break: break-word;
+          white-space: normal;
+        }
         .uri-cell,
         .digest-cell {
           font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
@@ -321,6 +326,11 @@ html lang="en"
               | Refresh Data
             a.btn.btn-secondary href="/v2/" target="_blank"
               | Test Registry
+          .actions
+            input#quick-image-name placeholder="Image (e.g. dtorry/registry-mirror)" style="padding: 8px 10px; border: 1px solid var(--border); background: #fff; min-width: 260px;"
+            input#quick-image-tag placeholder="Tag or digest (e.g. latest)" style="padding: 8px 10px; border: 1px solid var(--border); background: #fff; min-width: 180px;"
+            button.btn.btn-primary onclick="requestCacheImage()"
+              | Request & Cache
 
         .card style="grid-column: 1 / -1;"
           h2 Cached Images & Tags
@@ -330,6 +340,15 @@ html lang="en"
               | Clear
           .cache-table-container
             table.cache-table id="cache-entries-table"
+              colgroup
+                col style="width: 14%;"
+                col style="width: 28%;"
+                col style="width: 5%;"
+                col style="width: 22%;"
+                col style="width: 5%;"
+                col style="width: 6%;"
+                col style="width: 5%;"
+                col style="width: 15%;"
               thead
                 tr
                   th Image:Tag
@@ -549,7 +568,9 @@ html lang="en"
           currentPage = page;
           
           try {
-            const response = await fetch(`/cache/entries?page=${page}&per_page=10`);
+            const filterValue = (document.getElementById('cache-filter').value || '').trim();
+            const filterParam = filterValue ? `&q=${encodeURIComponent(filterValue)}` : '';
+            const response = await fetch(`/cache/entries?page=${page}&per_page=10${filterParam}`);
             if (response.ok) {
               const data = await response.json();
               updateCacheEntriesTable(data.entries);
@@ -593,7 +614,7 @@ html lang="en"
             
             return `
               <tr>
-                <td class="image-tag">${imageTag}</td>
+                <td class="image-tag image-tag-wrap">${imageTag}</td>
                 <td class="uri-cell" title="${entry.uri}">${entry.uri}</td>
                 <td><span class="status-badge ${statusClass}">${entry.status}</span></td>
                 <td class="digest-cell">${entry.digest || 'N/A'}</td>
@@ -622,6 +643,30 @@ html lang="en"
           }
         }
 
+        async function requestCacheImage() {
+          const image = document.getElementById('quick-image-name').value.trim();
+          const tag = document.getElementById('quick-image-tag').value.trim();
+
+          if (!image || !tag) {
+            addLogEntry('error', 'Image and tag are required to request cache');
+            return;
+          }
+
+          try {
+            const response = await fetch(`/cache/refresh?image=${encodeURIComponent(image)}&tag=${encodeURIComponent(tag)}`, { method: 'POST' });
+            const data = await response.json();
+            if (response.ok) {
+              addLogEntry('info', `Requested cache: ${image}:${tag} status ${data.refresh.status}`);
+              await loadCacheEntries(currentPage);
+              await fetchCacheStats();
+            } else {
+              addLogEntry('error', data.error || 'Request cache failed');
+            }
+          } catch (error) {
+            addLogEntry('error', `Request cache error: ${error.message}`);
+          }
+        }
+
         async function checkStatusEntry(image, tag) {
           try {
             const response = await fetch(`/cache/image_status?image=${image}&tag=${tag}`);
@@ -639,19 +684,18 @@ html lang="en"
           }
         }
 
+        let filterDebounce;
         function applyCacheFilter() {
-          const filterValue = (document.getElementById('cache-filter').value || '').toLowerCase();
-          const rows = document.querySelectorAll('#cache-entries-tbody tr');
-          rows.forEach(row => {
-            const text = row.textContent.toLowerCase();
-            row.style.display = text.includes(filterValue) ? '' : 'none';
-          });
+          clearTimeout(filterDebounce);
+          filterDebounce = setTimeout(() => {
+            loadCacheEntries(1);
+          }, 200);
         }
 
         function clearCacheFilter() {
           const input = document.getElementById('cache-filter');
           input.value = '';
-          applyCacheFilter();
+          loadCacheEntries(1);
         }
 
         async function removeEntry(image, tag) {

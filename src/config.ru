@@ -31,9 +31,16 @@ DB.execute <<-SQL
     status INTEGER,
     content_type TEXT,
     headers TEXT,
-    body BLOB
+    body BLOB,
+    digest TEXT
   );
 SQL
+
+begin
+  DB.execute("ALTER TABLE cache_entries ADD COLUMN digest TEXT")
+rescue SQLite3::SQLException
+  # Column already exists
+end
 
 helpers do
   # Track last cleanup time via Sinatra settings to avoid helper scope lookups
@@ -194,9 +201,14 @@ helpers do
 
     # Skip caching system/API and non-tag entries to avoid polluting the cache list
     return if parsed[:image_name].nil? || parsed[:tag].nil?
+
+    digest = headers['docker-content-digest'] || headers['Docker-Content-Digest']
+    if digest.nil? && status == 200 && body
+      digest = "sha256:#{Digest::SHA256.hexdigest(body)}"
+    end
     
     DB.execute(
-      "INSERT OR REPLACE INTO cache_entries (uri, image_name, tag, cache_time, status, content_type, headers, body) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT OR REPLACE INTO cache_entries (uri, image_name, tag, cache_time, status, content_type, headers, body, digest) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [
         request.fullpath,
         parsed[:image_name],
@@ -205,7 +217,8 @@ helpers do
         status,
         headers['content-type'],
         JSON.dump({ "Content-Type" => headers['content-type'] }),
-        body
+        body,
+        digest
       ]
     )
     
@@ -364,26 +377,34 @@ get '/cache/entries' do
   page = (params[:page] || 1).to_i
   per_page = (params[:per_page] || 10).to_i
   offset = (page - 1) * per_page
+  query = params[:q].to_s.strip
+  query = nil if query.empty?
+
+  where_clause = ""
+  where_params = []
+  if query
+    like = "%#{query.downcase}%"
+    where_clause = "WHERE lower(COALESCE(image_name,'')) LIKE ? OR lower(COALESCE(tag,'')) LIKE ? OR lower(COALESCE(uri,'')) LIKE ? OR lower(COALESCE(digest,'')) LIKE ?"
+    where_params = [like, like, like, like]
+  end
   
   # Get total count
-  total_count = DB.execute("SELECT COUNT(*) FROM cache_entries").first[0]
+  total_count = DB.execute("SELECT COUNT(*) FROM cache_entries #{where_clause}", where_params).first[0]
   
   # Get paginated entries with details
   entries = DB.execute(
-    "SELECT uri, image_name, tag, cache_time, status, content_type, LENGTH(body) as size, body
-     FROM cache_entries 
+    "SELECT uri, image_name, tag, cache_time, status, content_type, LENGTH(body) as size, digest
+     FROM cache_entries
+     #{where_clause}
      ORDER BY cache_time DESC 
      LIMIT ? OFFSET ?",
-    [per_page, offset]
+    where_params + [per_page, offset]
   )
   
   body JSON.dump({
     entries: entries.map do |row|
       expired = row[3] <= Time.now.to_i - TTL
-      digest = nil
-      if row[1] && row[2] && row[7] && row[4] == 200
-        digest = "sha256:#{Digest::SHA256.hexdigest(row[7])}"
-      end
+      digest = row[7]
       {
         uri: row[0],
         image_name: row[1] || 'N/A',
