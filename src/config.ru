@@ -84,6 +84,46 @@ helpers do
       nil
     end
   end
+
+  def upstream_request(method, path, params = {}, headers = {})
+    if method == :get
+      conn.get(path, params, headers)
+    else
+      conn.run_request(method, path, nil, headers)
+    end
+  end
+
+  def fetch_with_auth(method, path, params = {}, headers = {})
+    resp = upstream_request(method, path, params, headers)
+
+    # Handle 401 with OAuth2 token flow
+    if resp.status == 401
+      auth_header = resp.headers['www-authenticate']
+      puts "DEBUG: Got 401, www-authenticate: #{auth_header}"
+      auth_params = parse_www_authenticate(auth_header)
+      puts "DEBUG: Parsed params: #{auth_params.inspect}"
+
+      if auth_params && auth_params['realm']
+        puts "DEBUG: About to call fetch_docker_token"
+        token = fetch_docker_token(
+          auth_params['realm'],
+          auth_params['service'],
+          auth_params['scope']
+        )
+        puts "DEBUG: Fetched token result: #{token ? 'YES' : 'NO'}"
+        puts "DEBUG: Token value: #{token.inspect[0..50]}" if token
+
+        if token
+          # Retry with token
+          headers_with_auth = headers.merge('Authorization' => "Bearer #{token}")
+          resp = upstream_request(method, path, params, headers_with_auth)
+          puts "DEBUG: Retry status: #{resp.status}"
+        end
+      end
+    end
+
+    resp
+  end
   def parse_docker_uri(uri)
     # Parse Docker registry URI to extract image_name and tag
     # Examples:
@@ -142,8 +182,18 @@ helpers do
     [status, headers, body]
   end
 
+  def cache_entry_for(image_name, tag)
+    DB.execute(
+      "SELECT uri, cache_time, status, content_type, headers, body FROM cache_entries WHERE image_name = ? AND tag = ? ORDER BY cache_time DESC LIMIT 1",
+      [image_name, tag]
+    ).first
+  end
+
   def save_cache(status, headers, body)
     parsed = parse_docker_uri(request.fullpath)
+
+    # Skip caching system/API and non-tag entries to avoid polluting the cache list
+    return if parsed[:image_name].nil? || parsed[:tag].nil?
     
     DB.execute(
       "INSERT OR REPLACE INTO cache_entries (uri, image_name, tag, cache_time, status, content_type, headers, body) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -320,7 +370,7 @@ get '/cache/entries' do
   
   # Get paginated entries with details
   entries = DB.execute(
-    "SELECT uri, image_name, tag, cache_time, status, content_type, LENGTH(body) as size 
+    "SELECT uri, image_name, tag, cache_time, status, content_type, LENGTH(body) as size, body
      FROM cache_entries 
      ORDER BY cache_time DESC 
      LIMIT ? OFFSET ?",
@@ -329,16 +379,23 @@ get '/cache/entries' do
   
   body JSON.dump({
     entries: entries.map do |row|
+      expired = row[3] <= Time.now.to_i - TTL
+      digest = nil
+      if row[1] && row[2] && row[7] && row[4] == 200
+        digest = "sha256:#{Digest::SHA256.hexdigest(row[7])}"
+      end
       {
         uri: row[0],
         image_name: row[1] || 'N/A',
         tag: row[2] || 'N/A', 
         cache_time: row[3],
         cached_ago: format_time_ago(row[3]),
+        expired: expired,
         status: row[4],
         content_type: row[5],
         size_bytes: row[6],
-        size_formatted: format_bytes(row[6])
+        size_formatted: format_bytes(row[6]),
+        digest: digest
       }
     end,
     pagination: {
@@ -352,12 +409,137 @@ get '/cache/entries' do
   })
 end
 
+get '/cache/image_status' do
+  content_type 'application/json'
+  image = params[:image]
+  tag = params[:tag]
+
+  if image.to_s.strip.empty? || tag.to_s.strip.empty?
+    status 400
+    return JSON.dump({ error: 'image and tag are required' })
+  end
+
+  manifest_path = "/v2/#{image}/manifests/#{tag}"
+  accept_header = params[:accept] || 'application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.index.v1+json'
+
+  upstream_resp = fetch_with_auth(:head, manifest_path, {}, { 'Accept' => accept_header })
+  if upstream_resp.status == 405
+    upstream_resp = fetch_with_auth(:get, manifest_path, {}, { 'Accept' => accept_header })
+  end
+
+  upstream_digest = upstream_resp.headers['docker-content-digest'] || upstream_resp.headers['Docker-Content-Digest']
+  upstream_last_modified = upstream_resp.headers['last-modified'] || upstream_resp.headers['Last-Modified']
+
+  cached_row = cache_entry_for(image, tag)
+  cached_data = nil
+  if cached_row
+    uri, cache_time, status_code, content_type, headers_json, body = cached_row
+    cached_digest = nil
+    if body && status_code == 200
+      cached_digest = "sha256:#{Digest::SHA256.hexdigest(body)}"
+    end
+    cached_data = {
+      uri: uri,
+      status: status_code,
+      content_type: content_type,
+      cache_time: cache_time,
+      cached_ago: format_time_ago(cache_time),
+      expired: cache_time <= Time.now.to_i - TTL,
+      digest: cached_digest
+    }
+  end
+
+  response = {
+    image: image,
+    tag: tag,
+    request_path: manifest_path,
+    cache: cached_data,
+    upstream: {
+      status: upstream_resp.status,
+      content_type: upstream_resp.headers['content-type'],
+      digest: upstream_digest,
+      last_modified: upstream_last_modified
+    },
+    comparison: {
+      cache_present: !cached_data.nil?,
+      cache_expired: cached_data ? cached_data[:expired] : nil,
+      digest_matches: (cached_data && upstream_digest) ? (cached_data[:digest] == upstream_digest) : nil
+    }
+  }
+
+  body JSON.dump(response)
+end
+
 post '/cache/cleanup' do
   content_type 'application/json'
   cleaned = cleanup_expired_cache
   body JSON.dump({
     cleanup: {
       entries_removed: cleaned,
+      timestamp: Time.now.iso8601
+    }
+  })
+end
+
+post '/cache/cleanup_all' do
+  content_type 'application/json'
+  total = DB.execute("SELECT COUNT(*) FROM cache_entries").first[0]
+  DB.execute("DELETE FROM cache_entries")
+  body JSON.dump({
+    cleanup: {
+      entries_removed: total,
+      timestamp: Time.now.iso8601
+    }
+  })
+end
+
+post '/cache/refresh' do
+  content_type 'application/json'
+  image = params[:image]
+  tag = params[:tag]
+
+  if image.to_s.strip.empty? || tag.to_s.strip.empty?
+    status 400
+    return JSON.dump({ error: 'image and tag are required' })
+  end
+
+  manifest_path = "/v2/#{image}/manifests/#{tag}"
+  accept_header = params[:accept] || 'application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.index.v1+json'
+
+  resp = fetch_with_auth(:get, manifest_path, {}, { 'Accept' => accept_header })
+  save_cache(resp.status, resp.headers, resp.body) if resp.status == 200
+
+  body JSON.dump({
+    refresh: {
+      image: image,
+      tag: tag,
+      status: resp.status,
+      cached: resp.status == 200,
+      timestamp: Time.now.iso8601
+    }
+  })
+end
+
+post '/cache/remove' do
+  content_type 'application/json'
+  image = params[:image]
+  tag = params[:tag]
+
+  if image.to_s.strip.empty? || tag.to_s.strip.empty?
+    status 400
+    return JSON.dump({ error: 'image and tag are required' })
+  end
+
+  removed = DB.execute(
+    "DELETE FROM cache_entries WHERE image_name = ? AND tag = ?",
+    [image, tag]
+  )
+
+  body JSON.dump({
+    remove: {
+      image: image,
+      tag: tag,
+      entries_removed: removed,
       timestamp: Time.now.iso8601
     }
   })
@@ -372,33 +554,7 @@ get '/*' do
     return body
   end
 
-  resp = conn.get(request.path, params, pass_headers)
-  
-  # Handle 401 with OAuth2 token flow
-  if resp.status == 401
-    auth_header = resp.headers['www-authenticate']
-    puts "DEBUG: Got 401, www-authenticate: #{auth_header}"
-    auth_params = parse_www_authenticate(auth_header)
-    puts "DEBUG: Parsed params: #{auth_params.inspect}"
-    
-    if auth_params && auth_params['realm']
-      puts "DEBUG: About to call fetch_docker_token"
-      token = fetch_docker_token(
-        auth_params['realm'],
-        auth_params['service'],
-        auth_params['scope']
-      )
-      puts "DEBUG: Fetched token result: #{token ? 'YES' : 'NO'}"
-      puts "DEBUG: Token value: #{token.inspect[0..50]}" if token
-      
-      if token
-        # Retry with token
-        headers_with_auth = pass_headers.merge('Authorization' => "Bearer #{token}")
-        resp = conn.get(request.path, params, headers_with_auth)
-        puts "DEBUG: Retry status: #{resp.status}"
-      end
-    end
-  end
+  resp = fetch_with_auth(:get, request.path, params, pass_headers)
   
   # Return response
   save_cache(resp.status, resp.headers, resp.body) if resp.status == 200

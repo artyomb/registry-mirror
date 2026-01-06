@@ -6,214 +6,219 @@ html lang="en"
     title Docker Registry Mirror - Dashboard
     style
       |
+        @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+        :root {
+          --bg: #f5f7fb;
+          --panel: #ffffff;
+          --border: #e5e7eb;
+          --text: #1f2937;
+          --muted: #6b7280;
+          --blue: #1a73e8;
+          --blue-weak: #e8f0fe;
+          --green: #137333;
+          --green-weak: #e6f4ea;
+          --amber: #b45309;
+          --amber-weak: #fff7ed;
+          --red: #b91c1c;
+          --red-weak: #fef2f2;
+        }
+
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { 
-          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        body {
+          font-family: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
+          background: var(--bg);
+          color: var(--text);
           min-height: 100vh;
           padding: 20px;
         }
-        .container { max-width: 1200px; margin: 0 auto; }
+        .container { max-width: none; margin: 0 auto; }
         .header {
-          background: rgba(255, 255, 255, 0.1);
-          backdrop-filter: blur(10px);
-          border-radius: 20px;
-          padding: 30px;
-          margin-bottom: 30px;
-          text-align: center;
-          color: white;
-          border: 1px solid rgba(255, 255, 255, 0.2);
+          background: var(--panel);
+          border-radius: 0;
+          padding: 24px 28px;
+          margin-bottom: 22px;
+          border: 1px solid var(--border);
+          box-shadow: 0 1px 2px rgba(16, 24, 40, 0.06);
+          text-align: left;
         }
-        .header h1 { font-size: 2.5em; margin-bottom: 10px; }
-        .header p { font-size: 1.2em; opacity: 0.9; }
-        
+        .header h1 {
+          font-size: 1.8em;
+          letter-spacing: -0.02em;
+          margin-bottom: 6px;
+        }
+        .header p { font-size: 1em; color: var(--muted); }
+
         .dashboard {
           display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-          gap: 20px;
-          margin-bottom: 30px;
-        }
-        
-        .card {
-          background: rgba(255, 255, 255, 0.95);
-          border-radius: 15px;
-          padding: 25px;
-          box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
-          border: 1px solid rgba(255, 255, 255, 0.2);
-          transition: transform 0.3s ease, box-shadow 0.3s ease;
-        }
-        .card:hover {
-          transform: translateY(-5px);
-          box-shadow: 0 12px 40px rgba(0, 0, 0, 0.15);
-        }
-        
-        .card h2 {
-          color: #2d3748;
+          grid-template-columns: repeat(12, 1fr);
+          gap: 18px;
           margin-bottom: 20px;
-          font-size: 1.5em;
+        }
+        .card {
+          background: var(--panel);
+          border-radius: 0;
+          padding: 20px;
+          border: 1px solid var(--border);
+          box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+        }
+        .card h2 {
+          color: var(--text);
+          margin-bottom: 14px;
+          font-size: 1.2em;
           display: flex;
           align-items: center;
           gap: 10px;
         }
-        
+        .card:nth-child(1),
+        .card:nth-child(2),
+        .card:nth-child(3),
+        .card:nth-child(4) { grid-column: span 3; }
+
         .metric {
           display: flex;
           justify-content: space-between;
           align-items: center;
-          padding: 12px 0;
-          border-bottom: 1px solid #e2e8f0;
+          padding: 10px 0;
+          border-bottom: 1px solid var(--border);
         }
         .metric:last-child { border-bottom: none; }
-        .metric-label { color: #4a5568; font-weight: 500; }
+        .metric-label { color: var(--muted); font-weight: 500; }
         .metric-value {
-          font-weight: 700;
-          font-size: 1.1em;
-          padding: 4px 12px;
-          border-radius: 20px;
+          font-weight: 600;
+          font-size: 0.98em;
+          padding: 4px 10px;
+          border-radius: 999px;
         }
-        
-        .status-healthy { background: #c6f6d5; color: #22543d; }
-        .status-warning { background: #fef5e7; color: #c05621; }
-        .status-error { background: #fed7d7; color: #c53030; }
-        .status-info { background: #bee3f8; color: #2c5282; }
-        
+
+        .status-healthy { background: var(--green-weak); color: var(--green); }
+        .status-warning { background: var(--amber-weak); color: var(--amber); }
+        .status-error { background: var(--red-weak); color: var(--red); }
+        .status-info { background: var(--blue-weak); color: var(--blue); }
+
         .progress-bar {
           width: 100%;
-          height: 8px;
-          background: #e2e8f0;
-          border-radius: 4px;
+          height: 6px;
+          background: #eef2f7;
+          border-radius: 0;
           overflow: hidden;
           margin-top: 8px;
         }
-        .progress-fill {
-          height: 100%;
-          transition: width 0.5s ease;
-          border-radius: 4px;
-        }
-        .progress-healthy { background: linear-gradient(90deg, #38a169, #48bb78); }
-        .progress-warning { background: linear-gradient(90deg, #d69e2e, #ed8936); }
-        .progress-error { background: linear-gradient(90deg, #e53e3e, #f56565); }
-        
+        .progress-fill { height: 100%; transition: width 0.4s ease; }
+        .progress-healthy { background: #34a853; }
+        .progress-warning { background: #f9ab00; }
+        .progress-error { background: #ea4335; }
+
         .actions {
           display: flex;
-          gap: 15px;
-          margin-top: 20px;
+          gap: 10px;
+          margin-top: 12px;
           flex-wrap: wrap;
         }
         .btn {
-          padding: 10px 20px;
-          border: none;
-          border-radius: 10px;
+          padding: 8px 14px;
+          border: 1px solid var(--border);
+          border-radius: 0;
           font-weight: 600;
           cursor: pointer;
-          transition: all 0.3s ease;
+          transition: background 0.2s ease, border-color 0.2s ease;
           text-decoration: none;
           display: inline-flex;
           align-items: center;
           gap: 8px;
+          background: #fff;
+          color: var(--text);
         }
         .btn-primary {
-          background: linear-gradient(45deg, #667eea, #764ba2);
-          color: white;
+          background: var(--blue);
+          color: #fff;
+          border-color: var(--blue);
         }
         .btn-secondary {
-          background: #f7fafc;
-          color: #4a5568;
-          border: 1px solid #e2e8f0;
+          background: #f9fafb;
+          color: var(--text);
         }
-        .btn:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15); }
-        
+        .btn:hover { border-color: #cbd5e1; }
+
         .logs {
-          background: #1a202c;
-          color: #e2e8f0;
-          border-radius: 15px;
-          padding: 25px;
-          margin-top: 20px;
-          font-family: 'Monaco', 'Menlo', monospace;
-          font-size: 14px;
-          max-height: 400px;
+          background: #0f172a;
+          color: #e5e7eb;
+          border-radius: 0;
+          padding: 20px;
+          margin-top: 18px;
+          font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+          font-size: 13px;
+          max-height: 360px;
           overflow-y: auto;
         }
-        .logs h3 { color: #63b3ed; margin-bottom: 15px; }
-        .log-entry { margin-bottom: 8px; opacity: 0.9; }
+        .logs h3 { color: #93c5fd; margin-bottom: 12px; }
+        .log-entry { margin-bottom: 6px; opacity: 0.9; }
         .log-timestamp { color: #9ca3af; }
-        .log-level-error { color: #f87171; }
-        .log-level-warn { color: #fbbf24; }
-        .log-level-info { color: #60a5fa; }
-        .log-level-debug { color: #a78bfa; }
-        
+        .log-level-error { color: #fca5a5; }
+        .log-level-warn { color: #fcd34d; }
+        .log-level-info { color: #93c5fd; }
+        .log-level-debug { color: #c4b5fd; }
+
         .refresh-info {
           text-align: center;
-          color: rgba(255, 255, 255, 0.8);
-          margin-top: 20px;
+          color: var(--muted);
+          margin-top: 16px;
           font-size: 0.9em;
         }
-        
+
         @keyframes pulse {
           0%, 100% { opacity: 1; }
           50% { opacity: 0.5; }
         }
         .loading { animation: pulse 1.5s infinite; }
-        
-        .emoji { font-size: 1.2em; }
-        
-        .cache-table-container {
-          overflow-x: auto;
-          margin-top: 15px;
-        }
+
+        .emoji { font-size: 1.1em; }
+
+        .cache-table-container { margin-top: 12px; }
         .cache-table {
           width: 100%;
+          table-layout: fixed;
           border-collapse: collapse;
-          font-size: 0.9em;
+          font-size: 0.88em;
         }
         .cache-table th,
         .cache-table td {
-          padding: 12px 8px;
+          padding: 10px 8px;
           text-align: left;
-          border-bottom: 1px solid #e2e8f0;
+          border-bottom: 1px solid var(--border);
+          vertical-align: middle;
         }
         .cache-table th {
-          background: #f7fafc;
+          background: #f8fafc;
           font-weight: 600;
-          color: #2d3748;
+          color: var(--muted);
           position: sticky;
           top: 0;
         }
-        .cache-table td {
-          color: #4a5568;
-        }
-        .cache-table tr:hover {
-          background: #f7fafc;
-        }
-        .image-tag {
-          font-weight: 600;
-          color: #2d3748;
-        }
-        .uri-cell {
-          font-family: monospace;
+        .cache-table tr:hover { background: #f8fafc; }
+        .image-tag { font-weight: 600; color: var(--text); }
+        .uri-cell,
+        .digest-cell {
+          font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
           font-size: 0.85em;
-          max-width: 300px;
-          overflow: hidden;
-          text-overflow: ellipsis;
-          white-space: nowrap;
+          overflow-wrap: anywhere;
+          word-break: break-word;
+          white-space: normal;
         }
+        .actions-cell { white-space: nowrap; }
+        .actions-cell .btn { padding: 6px 10px; font-size: 0.82em; }
+        .actions-inline { display: inline-flex; gap: 6px; align-items: center; flex-wrap: nowrap; }
         .status-badge {
           padding: 4px 8px;
-          border-radius: 4px;
-          font-size: 0.8em;
-          font-weight: 600;
+          border-radius: 0;
+          font-size: 0.78em;
+          font-weight: 700;
         }
-        .status-200 { background: #c6f6d5; color: #22543d; }
-        .status-307 { background: #bee3f8; color: #2c5282; }
-        .status-other { background: #fed7d7; color: #c53030; }
-        .size-cell {
-          font-weight: 600;
-          color: #2c5282;
-        }
-        .time-cell {
-          color: #718096;
-          font-size: 0.85em;
-        }
+        .status-200 { background: var(--green-weak); color: var(--green); }
+        .status-307 { background: var(--blue-weak); color: var(--blue); }
+        .status-other { background: var(--red-weak); color: var(--red); }
+        .size-cell { font-weight: 600; color: #1d4ed8; }
+        .time-cell { color: var(--muted); font-size: 0.85em; }
         .pagination-controls {
           display: flex;
           align-items: center;
@@ -221,28 +226,38 @@ html lang="en"
           gap: 10px;
           flex-wrap: wrap;
         }
-        
-        @media (max-width: 768px) {
-          .dashboard { grid-template-columns: 1fr; }
-          .header h1 { font-size: 2em; }
-          .actions { flex-direction: column; }
-          .cache-table { font-size: 0.8em; }
-          .cache-table th,
-          .cache-table td { padding: 8px 4px; }
-          .uri-cell { max-width: 150px; }
+
+        @media (max-width: 1200px) {
+          .card:nth-child(1),
+          .card:nth-child(2),
+          .card:nth-child(3),
+          .card:nth-child(4) { grid-column: span 6; }
+        }
+        @media (max-width: 900px) {
+          .dashboard { grid-template-columns: repeat(6, 1fr); }
+          .card:nth-child(1),
+          .card:nth-child(2),
+          .card:nth-child(3),
+          .card:nth-child(4) { grid-column: span 6; }
+          .cache-table-container { overflow-x: auto; }
+          .cache-table { min-width: 980px; }
+        }
+        @media (max-width: 640px) {
+          body { padding: 14px; }
+          .header h1 { font-size: 1.4em; }
+          .actions { flex-direction: column; align-items: stretch; }
+          .btn { width: 100%; justify-content: center; }
         }
 
   body
     .container
       .header
-        h1 🐳 Docker Registry Mirror Dashboard
+        h1 Docker Registry Mirror Dashboard
         p Real-time monitoring and alerting for cache performance & redirect health
 
       .dashboard
         .card
-          h2
-            span.emoji 📊
-            | Cache Metrics
+          h2 Cache Metrics
           .metric
             span.metric-label Total Entries
             span.metric-value.status-info id="cache-entries" Loading...
@@ -262,9 +277,7 @@ html lang="en"
               .progress-fill id="hit-rate-bar"
 
         .card
-          h2
-            span.emoji 🔄
-            | Redirect Health
+          h2 Redirect Health
           .metric
             span.metric-label Total Redirects
             span.metric-value.status-info id="total-redirects" Loading...
@@ -281,9 +294,7 @@ html lang="en"
             span.metric-value.status-info id="avg-response-time" Loading...
 
         .card
-          h2
-            span.emoji ⚡
-            | System Status
+          h2 System Status
           .metric
             span.metric-label Registry Status
             span.metric-value id="registry-status" Loading...
@@ -298,27 +309,25 @@ html lang="en"
             span.metric-value.status-info id="connections" Loading...
 
         .card
-          h2
-            span.emoji 🛠️
-            | Quick Actions
+          h2 Quick Actions
           .actions
             a.btn.btn-primary href="/cache/stats" target="_blank"
-              span 📈
               | View Cache Stats
             button.btn.btn-secondary onclick="triggerCleanup()"
-              span 🧹
               | Manual Cleanup
+            button.btn.btn-secondary onclick="triggerCleanupAll()"
+              | Cleanup All
             button.btn.btn-secondary onclick="refreshDashboard()"
-              span 🔄
               | Refresh Data
             a.btn.btn-secondary href="/v2/" target="_blank"
-              span 🔍
               | Test Registry
 
         .card style="grid-column: 1 / -1;"
-          h2
-            span.emoji 📋
-            | Cached Images & Tags
+          h2 Cached Images & Tags
+          .actions
+            input#cache-filter placeholder="Filter by image, tag, digest, or URI" style="padding: 8px 10px; border: 1px solid var(--border); background: #fff; min-width: 320px;"
+            button.btn.btn-secondary onclick="clearCacheFilter()"
+              | Clear
           .cache-table-container
             table.cache-table id="cache-entries-table"
               thead
@@ -326,11 +335,14 @@ html lang="en"
                   th Image:Tag
                   th URI
                   th Status
+                  th Digest
                   th Size
                   th Cached
+                  th Fresh
+                  th Actions
               tbody id="cache-entries-tbody"
                 tr
-                  td colspan="5" style="text-align: center; padding: 20px;" Loading entries...
+                  td colspan="8" style="text-align: center; padding: 20px;" Loading entries...
           .pagination-controls id="pagination-controls" style="margin-top: 15px; text-align: center; display: none;"
             button.btn.btn-secondary onclick="loadCacheEntries(currentPage - 1)" id="prev-btn" disabled
               span ⬅️
@@ -341,14 +353,14 @@ html lang="en"
               | Next
 
       .logs
-        h3 📝 Recent Activity Logs
+        h3 Recent Activity Logs
         div id="logs-container"
           .log-entry
             span.log-timestamp [Loading...]
             |  Initializing dashboard...
 
       .refresh-info
-        p 🔄 Dashboard auto-refreshes every 30 seconds
+        p Dashboard auto-refreshes every 30 seconds
         p Last updated: 
           span id="last-updated" Loading...
 
@@ -490,6 +502,22 @@ html lang="en"
           }
         }
 
+        async function triggerCleanupAll() {
+          try {
+            const response = await fetch('/cache/cleanup_all', { method: 'POST' });
+            if (response.ok) {
+              const data = await response.json();
+              addLogEntry('warn', `Cleanup all completed: ${data.cleanup.entries_removed} entries removed`);
+              await fetchCacheStats();
+              await loadCacheEntries(1);
+            } else {
+              addLogEntry('error', 'Cleanup all failed');
+            }
+          } catch (error) {
+            addLogEntry('error', `Cleanup all error: ${error.message}`);
+          }
+        }
+
         function addLogEntry(level, message) {
           const timestamp = new Date().toLocaleTimeString();
           const logContainer = document.getElementById('logs-container');
@@ -539,7 +567,7 @@ html lang="en"
           const tbody = document.getElementById('cache-entries-tbody');
           
           if (entries.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; padding: 20px; color: #718096;">No cache entries found</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; padding: 20px; color: #718096;">No cache entries found</td></tr>';
             return;
           }
           
@@ -550,17 +578,96 @@ html lang="en"
               
             const statusClass = entry.status === 200 ? 'status-200' : 
                                entry.status === 307 ? 'status-307' : 'status-other';
+            const freshText = entry.expired ? 'Expired' : 'Fresh';
+            const freshClass = entry.expired ? 'status-badge status-other' : 'status-badge status-200';
+            const canAct = entry.image_name !== 'N/A' && entry.tag !== 'N/A';
+            const safeImage = encodeURIComponent(entry.image_name || '');
+            const safeTag = encodeURIComponent(entry.tag || '');
+            const actionButtons = canAct ? `
+              <span class="actions-inline">
+                <button class="btn btn-secondary" onclick="forceRefreshEntry('${safeImage}','${safeTag}')">Force Update</button>
+                <button class="btn btn-secondary" onclick="checkStatusEntry('${safeImage}','${safeTag}')">Check Status</button>
+                <button class="btn btn-secondary" onclick="removeEntry('${safeImage}','${safeTag}')">Remove</button>
+              </span>
+            ` : '<span style="color: #718096;">N/A</span>';
             
             return `
               <tr>
                 <td class="image-tag">${imageTag}</td>
                 <td class="uri-cell" title="${entry.uri}">${entry.uri}</td>
                 <td><span class="status-badge ${statusClass}">${entry.status}</span></td>
+                <td class="digest-cell">${entry.digest || 'N/A'}</td>
                 <td class="size-cell">${entry.size_formatted}</td>
                 <td class="time-cell">${entry.cached_ago}</td>
+                <td><span class="${freshClass}">${freshText}</span></td>
+                <td class="actions-cell">${actionButtons}</td>
               </tr>
             `;
           }).join('');
+        }
+
+        async function forceRefreshEntry(image, tag) {
+          try {
+            const response = await fetch(`/cache/refresh?image=${image}&tag=${tag}`, { method: 'POST' });
+            const data = await response.json();
+            if (response.ok) {
+              addLogEntry('info', `Force update: ${decodeURIComponent(image)}:${decodeURIComponent(tag)} status ${data.refresh.status}`);
+              await loadCacheEntries(currentPage);
+              await fetchCacheStats();
+            } else {
+              addLogEntry('error', data.error || 'Force update failed');
+            }
+          } catch (error) {
+            addLogEntry('error', `Force update error: ${error.message}`);
+          }
+        }
+
+        async function checkStatusEntry(image, tag) {
+          try {
+            const response = await fetch(`/cache/image_status?image=${image}&tag=${tag}`);
+            const data = await response.json();
+            if (response.ok) {
+              const digestNote = data.comparison && data.comparison.digest_matches === true ? 'digest matches upstream' :
+                data.comparison && data.comparison.digest_matches === false ? 'digest differs from upstream' :
+                'digest unknown';
+              addLogEntry('info', `Status: ${decodeURIComponent(image)}:${decodeURIComponent(tag)} upstream ${data.upstream.status}, ${digestNote}`);
+            } else {
+              addLogEntry('error', data.error || 'Status check failed');
+            }
+          } catch (error) {
+            addLogEntry('error', `Status check error: ${error.message}`);
+          }
+        }
+
+        function applyCacheFilter() {
+          const filterValue = (document.getElementById('cache-filter').value || '').toLowerCase();
+          const rows = document.querySelectorAll('#cache-entries-tbody tr');
+          rows.forEach(row => {
+            const text = row.textContent.toLowerCase();
+            row.style.display = text.includes(filterValue) ? '' : 'none';
+          });
+        }
+
+        function clearCacheFilter() {
+          const input = document.getElementById('cache-filter');
+          input.value = '';
+          applyCacheFilter();
+        }
+
+        async function removeEntry(image, tag) {
+          try {
+            const response = await fetch(`/cache/remove?image=${image}&tag=${tag}`, { method: 'POST' });
+            const data = await response.json();
+            if (response.ok) {
+              addLogEntry('warn', `Removed cache: ${decodeURIComponent(image)}:${decodeURIComponent(tag)} (${data.remove.entries_removed} entries)`);
+              await loadCacheEntries(currentPage);
+              await fetchCacheStats();
+            } else {
+              addLogEntry('error', data.error || 'Remove failed');
+            }
+          } catch (error) {
+            addLogEntry('error', `Remove error: ${error.message}`);
+          }
         }
 
         function updatePaginationControls(pagination) {
@@ -594,4 +701,8 @@ html lang="en"
           addLogEntry('info', 'Dashboard initialized');
           refreshDashboard();
           loadCacheEntries(1);
+          const filterInput = document.getElementById('cache-filter');
+          if (filterInput) {
+            filterInput.addEventListener('input', applyCacheFilter);
+          }
         });

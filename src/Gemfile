@@ -15,7 +15,6 @@ gem 'slim'
 gem 'sqlite3'
 
 group :test do
-  gem 'sqlite3'
   gem 'rspec'
   gem 'rack-test'
   gem 'rspec-benchmark'
