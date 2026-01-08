@@ -5,6 +5,7 @@ require 'json'
 require 'digest'
 require 'slim'
 require 'sqlite3'
+require 'time'
 
 require 'stack-service-base'
 
@@ -16,6 +17,9 @@ CACHE_DIR = ENV.fetch('CACHE_DIR', 'cache')
 CACHE_DB = File.join(CACHE_DIR, 'registry_cache.db')
 CLEANUP_INTERVAL = ENV.fetch('CLEANUP_INTERVAL', '300').to_i  # 5 minutes default
 set :last_cleanup, Time.now - CLEANUP_INTERVAL
+TOKEN_CACHE = {}
+TOKEN_LOCK = Mutex.new
+AUTH_HINT = {}
 
 FileUtils.mkdir_p(CACHE_DIR)
 
@@ -70,7 +74,46 @@ helpers do
     params
   end
 
+  def token_cache_key(realm, service, scope)
+    "#{realm}|#{service}|#{scope}"
+  end
+
+  def cached_token_for(realm, service, scope)
+    key = token_cache_key(realm, service, scope)
+    TOKEN_LOCK.synchronize do
+      entry = TOKEN_CACHE[key]
+      return nil unless entry
+      return nil if entry[:error_until] && Time.now < entry[:error_until]
+      return nil if entry[:expires_at] && Time.now >= entry[:expires_at]
+      entry[:token]
+    end
+  end
+
+  def store_token(realm, service, scope, token, expires_in)
+    key = token_cache_key(realm, service, scope)
+    expires_at = nil
+    if expires_in && expires_in.to_i > 0
+      # Apply a small skew so we refresh before it truly expires
+      expires_at = Time.now + expires_in.to_i - 30
+    else
+      expires_at = Time.now + 300
+    end
+    TOKEN_LOCK.synchronize do
+      TOKEN_CACHE[key] = { token: token, expires_at: expires_at }
+    end
+  end
+
+  def store_token_error(realm, service, scope)
+    key = token_cache_key(realm, service, scope)
+    TOKEN_LOCK.synchronize do
+      TOKEN_CACHE[key] = { token: nil, error_until: Time.now + 30 }
+    end
+  end
+
   def fetch_docker_token(realm, service, scope)
+    cached = cached_token_for(realm, service, scope)
+    return cached if cached
+
     puts "DEBUG: fetch_docker_token called"
     url = "#{realm}?service=#{service}"
     url += "&scope=#{scope}" if scope
@@ -79,29 +122,56 @@ helpers do
     begin
       resp = auth_conn.get(url)
       puts "DEBUG: Token response status: #{resp.status}, body: #{resp.body[0..200]}"
-      return nil unless resp.status == 200
+      unless resp.status == 200
+        store_token_error(realm, service, scope)
+        return nil
+      end
       
       data = JSON.parse(resp.body)
       token = data['token'] || data['access_token']
+      expires_in = data['expires_in']
       puts "DEBUG: Extracted token: #{token ? token[0..20] : 'nil'}"
+      store_token(realm, service, scope, token, expires_in) if token
       token
     rescue => e
       puts "DEBUG: Token fetch error: #{e.class} - #{e.message}"
       puts "DEBUG: Backtrace: #{e.backtrace[0..3].join("\n")}"
+      store_token_error(realm, service, scope)
       nil
     end
   end
 
   def upstream_request(method, path, params = {}, headers = {})
     if method == :get
-      conn.get(path, params, headers)
+      if params.nil?
+        conn.get(path, nil, headers)
+      else
+        conn.get(path, params, headers)
+      end
     else
       conn.run_request(method, path, nil, headers)
     end
   end
 
+  def scope_for_path(path)
+    parsed = parse_docker_uri(path)
+    return nil unless parsed[:image_name]
+    "repository:#{parsed[:image_name]}:pull"
+  end
+
   def fetch_with_auth(method, path, params = {}, headers = {})
-    resp = upstream_request(method, path, params, headers)
+    request_headers = headers.dup
+
+    # Try cached token first if we have auth hints for this upstream.
+    hint = AUTH_HINT[UPSTREAM]
+    if request_headers['Authorization'].nil? && hint
+      scope = scope_for_path(path)
+      token = cached_token_for(hint[:realm], hint[:service], scope) ||
+              cached_token_for(hint[:realm], hint[:service], nil)
+      request_headers['Authorization'] = "Bearer #{token}" if token
+    end
+
+    resp = upstream_request(method, path, params, request_headers)
 
     # Handle 401 with OAuth2 token flow
     if resp.status == 401
@@ -111,18 +181,17 @@ helpers do
       puts "DEBUG: Parsed params: #{auth_params.inspect}"
 
       if auth_params && auth_params['realm']
+        AUTH_HINT[UPSTREAM] = { realm: auth_params['realm'], service: auth_params['service'] }
+        scope = auth_params['scope'] || scope_for_path(path)
+
         puts "DEBUG: About to call fetch_docker_token"
-        token = fetch_docker_token(
-          auth_params['realm'],
-          auth_params['service'],
-          auth_params['scope']
-        )
+        token = fetch_docker_token(auth_params['realm'], auth_params['service'], scope)
         puts "DEBUG: Fetched token result: #{token ? 'YES' : 'NO'}"
         puts "DEBUG: Token value: #{token.inspect[0..50]}" if token
 
         if token
           # Retry with token
-          headers_with_auth = headers.merge('Authorization' => "Bearer #{token}")
+          headers_with_auth = request_headers.merge('Authorization' => "Bearer #{token}")
           resp = upstream_request(method, path, params, headers_with_auth)
           puts "DEBUG: Retry status: #{resp.status}"
         end
@@ -372,6 +441,14 @@ get '/cache/stats' do
   })
 end
 
+# Short-circuit the registry ping to avoid upstream auth/token churn
+get '/v2/' do
+  status 200
+  content_type 'application/json'
+  headers 'Docker-Distribution-Api-Version' => 'registry/2.0'
+  body '{}'
+end
+
 get '/cache/entries' do
   content_type 'application/json'
   page = (params[:page] || 1).to_i
@@ -575,7 +652,9 @@ get '/*' do
     return body
   end
 
-  resp = fetch_with_auth(:get, request.path, params, pass_headers)
+  upstream_path = request.path_info
+  upstream_full_path = request.query_string.empty? ? upstream_path : "#{upstream_path}?#{request.query_string}"
+  resp = fetch_with_auth(:get, upstream_full_path, nil, pass_headers)
   
   # Return response
   save_cache(resp.status, resp.headers, resp.body) if resp.status == 200

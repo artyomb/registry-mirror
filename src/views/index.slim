@@ -61,6 +61,7 @@ html lang="en"
           padding: 20px;
           border: 1px solid var(--border);
           box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+          grid-column: span 6;
         }
         .card h2 {
           color: var(--text);
@@ -70,11 +71,6 @@ html lang="en"
           align-items: center;
           gap: 10px;
         }
-        .card:nth-child(1),
-        .card:nth-child(2),
-        .card:nth-child(3),
-        .card:nth-child(4) { grid-column: span 3; }
-
         .metric {
           display: flex;
           justify-content: space-between;
@@ -233,17 +229,11 @@ html lang="en"
         }
 
         @media (max-width: 1200px) {
-          .card:nth-child(1),
-          .card:nth-child(2),
-          .card:nth-child(3),
-          .card:nth-child(4) { grid-column: span 6; }
+          .card { grid-column: span 6; }
         }
         @media (max-width: 900px) {
           .dashboard { grid-template-columns: repeat(6, 1fr); }
-          .card:nth-child(1),
-          .card:nth-child(2),
-          .card:nth-child(3),
-          .card:nth-child(4) { grid-column: span 6; }
+          .card { grid-column: span 6; }
           .cache-table-container { overflow-x: auto; }
           .cache-table { min-width: 980px; }
         }
@@ -280,38 +270,6 @@ html lang="en"
             span.metric-value id="hit-rate" Loading...
             .progress-bar
               .progress-fill id="hit-rate-bar"
-
-        .card
-          h2 Redirect Health
-          .metric
-            span.metric-label Total Redirects
-            span.metric-value.status-info id="total-redirects" Loading...
-          .metric
-            span.metric-label Location Headers
-            span.metric-value id="location-success" Loading...
-          .metric
-            span.metric-label Success Rate
-            span.metric-value id="redirect-rate" Loading...
-            .progress-bar
-              .progress-fill id="redirect-rate-bar"
-          .metric
-            span.metric-label Avg Response Time
-            span.metric-value.status-info id="avg-response-time" Loading...
-
-        .card
-          h2 System Status
-          .metric
-            span.metric-label Registry Status
-            span.metric-value id="registry-status" Loading...
-          .metric
-            span.metric-label Uptime
-            span.metric-value.status-info id="uptime" Loading...
-          .metric
-            span.metric-label Memory Usage
-            span.metric-value id="memory-usage" Loading...
-          .metric
-            span.metric-label Active Connections
-            span.metric-value.status-info id="connections" Loading...
 
         .card
           h2 Quick Actions
@@ -362,6 +320,12 @@ html lang="en"
               tbody id="cache-entries-tbody"
                 tr
                   td colspan="8" style="text-align: center; padding: 20px;" Loading entries...
+          .logs id="status-panel" style="margin-top: 14px; background: #f8fafc; color: #1f2937; border: 1px solid var(--border);"
+            .actions style="margin-bottom: 8px; justify-content: space-between; align-items: center;"
+              strong Status Result
+              button.btn.btn-secondary onclick="clearStatusResult()"
+                | Close
+            pre id="status-result" style="white-space: pre-wrap; word-break: break-word; font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace; font-size: 12px; color: #111827;" No status checked yet.
           .pagination-controls id="pagination-controls" style="margin-top: 15px; text-align: center; display: none;"
             button.btn.btn-secondary onclick="loadCacheEntries(currentPage - 1)" id="prev-btn" disabled
               span ⬅️
@@ -385,13 +349,6 @@ html lang="en"
 
     script
       |
-        let redirectMonitoringData = {
-          totalRequests: 0,
-          redirects: 0,
-          locationHeaders: 0,
-          responseTimes: []
-        };
-
         let currentPage = 1;
         let totalPages = 1;
 
@@ -407,48 +364,6 @@ html lang="en"
           } catch (error) {
             console.error('Error fetching cache stats:', error);
           }
-        }
-
-        async function testRedirectHealth() {
-          const testEndpoints = [
-            '/v2/',
-            '/v2/library/alpine/manifests/latest'
-          ];
-
-          let totalRequests = 0;
-          let redirectCount = 0;
-          let locationHeaderCount = 0;
-          let responseTimes = [];
-
-          for (const endpoint of testEndpoints) {
-            try {
-              const startTime = Date.now();
-              const response = await fetch(endpoint, { method: 'HEAD' });
-              const endTime = Date.now();
-              const responseTime = endTime - startTime;
-
-              totalRequests++;
-              responseTimes.push(responseTime);
-
-              if (response.status >= 300 && response.status < 400) {
-                redirectCount++;
-                if (response.headers.get('Location')) {
-                  locationHeaderCount++;
-                }
-              }
-            } catch (error) {
-              console.error(`Error testing ${endpoint}:`, error);
-            }
-          }
-
-          redirectMonitoringData = {
-            totalRequests,
-            redirects: redirectCount,
-            locationHeaders: locationHeaderCount,
-            responseTimes
-          };
-
-          updateRedirectMetrics();
         }
 
         function updateCacheMetrics(cache) {
@@ -471,39 +386,6 @@ html lang="en"
           hitRateBar.className = hitRate > 80 ? 'progress-fill progress-healthy' : hitRate > 60 ? 'progress-fill progress-warning' : 'progress-fill progress-error';
 
           addLogEntry('info', `Cache metrics updated: ${cache.total_entries} entries, ${cache.total_size_mb}MB`);
-        }
-
-        function updateRedirectMetrics() {
-          const data = redirectMonitoringData;
-          
-          document.getElementById('total-redirects').textContent = data.redirects;
-          document.getElementById('location-success').textContent = data.locationHeaders + '/' + data.redirects;
-          
-          const successRate = data.redirects > 0 ? (data.locationHeaders / data.redirects * 100) : 100;
-          const rateEl = document.getElementById('redirect-rate');
-          rateEl.textContent = Math.round(successRate) + '%';
-          rateEl.className = successRate === 100 ? 'metric-value status-healthy' : successRate > 90 ? 'metric-value status-warning' : 'metric-value status-error';
-          
-          const rateBar = document.getElementById('redirect-rate-bar');
-          rateBar.style.width = successRate + '%';
-          rateBar.className = successRate === 100 ? 'progress-fill progress-healthy' : successRate > 90 ? 'progress-fill progress-warning' : 'progress-fill progress-error';
-
-          const avgTime = data.responseTimes.length > 0 ? data.responseTimes.reduce((a, b) => a + b, 0) / data.responseTimes.length : 0;
-          document.getElementById('avg-response-time').textContent = Math.round(avgTime) + 'ms';
-
-          addLogEntry('info', `Redirect health checked: ${successRate.toFixed(1)}% success rate`);
-        }
-
-        function updateSystemStatus() {
-          // Mock system metrics
-          document.getElementById('registry-status').textContent = 'Healthy';
-          document.getElementById('registry-status').className = 'metric-value status-healthy';
-          
-          document.getElementById('uptime').textContent = '2h 15m';
-          document.getElementById('memory-usage').textContent = '145MB';
-          document.getElementById('memory-usage').className = 'metric-value status-healthy';
-          
-          document.getElementById('connections').textContent = '12';
         }
 
         async function triggerCleanup() {
@@ -553,11 +435,7 @@ html lang="en"
 
         async function refreshDashboard() {
           addLogEntry('info', 'Refreshing dashboard data...');
-          await Promise.all([
-            fetchCacheStats(),
-            testRedirectHealth()
-          ]);
-          updateSystemStatus();
+          await fetchCacheStats();
           document.getElementById('last-updated').textContent = new Date().toLocaleString();
           addLogEntry('info', 'Dashboard refresh completed');
         }
@@ -676,11 +554,46 @@ html lang="en"
                 data.comparison && data.comparison.digest_matches === false ? 'digest differs from upstream' :
                 'digest unknown';
               addLogEntry('info', `Status: ${decodeURIComponent(image)}:${decodeURIComponent(tag)} upstream ${data.upstream.status}, ${digestNote}`);
+              const statusResult = document.getElementById('status-result');
+              if (statusResult) {
+                statusResult.textContent = JSON.stringify(data, null, 2);
+              }
+              const statusPanel = document.getElementById('status-panel');
+              if (statusPanel) {
+                statusPanel.style.display = '';
+              }
             } else {
               addLogEntry('error', data.error || 'Status check failed');
+              const statusResult = document.getElementById('status-result');
+              if (statusResult) {
+                statusResult.textContent = JSON.stringify(data, null, 2);
+              }
+              const statusPanel = document.getElementById('status-panel');
+              if (statusPanel) {
+                statusPanel.style.display = '';
+              }
             }
           } catch (error) {
             addLogEntry('error', `Status check error: ${error.message}`);
+            const statusResult = document.getElementById('status-result');
+            if (statusResult) {
+              statusResult.textContent = error.message;
+            }
+            const statusPanel = document.getElementById('status-panel');
+            if (statusPanel) {
+              statusPanel.style.display = '';
+            }
+          }
+        }
+
+        function clearStatusResult() {
+          const statusPanel = document.getElementById('status-panel');
+          const statusResult = document.getElementById('status-result');
+          if (statusResult) {
+            statusResult.textContent = 'No status checked yet.';
+          }
+          if (statusPanel) {
+            statusPanel.style.display = 'none';
           }
         }
 
@@ -749,4 +662,5 @@ html lang="en"
           if (filterInput) {
             filterInput.addEventListener('input', applyCacheFilter);
           }
+          clearStatusResult();
         });
