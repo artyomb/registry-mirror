@@ -49,6 +49,58 @@ RSpec.describe 'Integration Tests' do
       expect(last_response.status).to eq(first_status)
     end
 
+    it 'uses the same cached manifest when Docker mirror namespace query is present' do
+      path = '/v2/dtorry/oauth2-slim/manifests/latest'
+      body = '{"schemaVersion":2,"config":{"digest":"sha256:test"}}'
+      headers_json = JSON.dump({ 'Content-Type' => 'application/vnd.docker.distribution.manifest.v2+json' })
+
+      DB.execute('DELETE FROM cache_entries WHERE image_name = ? AND tag = ?', ['dtorry/oauth2-slim', 'latest'])
+      DB.execute(
+        'INSERT INTO cache_entries (uri, image_name, tag, cache_time, status, content_type, headers, body, digest) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [
+          path,
+          'dtorry/oauth2-slim',
+          'latest',
+          Time.now.to_i,
+          200,
+          'application/vnd.docker.distribution.manifest.v2+json',
+          headers_json,
+          body,
+          'sha256:test'
+        ]
+      )
+
+      allow_any_instance_of(Sinatra::Application).to receive(:fetch_with_auth).and_raise('upstream should not be called')
+
+      get "#{path}?ns=docker.io"
+
+      expect(last_response.status).to eq(200)
+      expect(last_response.body).to eq(body)
+    end
+
+    it 'does not forward Docker mirror namespace query parameters upstream' do
+      path = '/v2/dtorry/oauth2-slim/manifests/latest'
+      response = Struct.new(:status, :headers, :body).new(
+        200,
+        { 'content-type' => 'application/vnd.docker.distribution.manifest.v2+json' },
+        '{"schemaVersion":2}'
+      )
+
+      DB.execute('DELETE FROM cache_entries WHERE image_name = ? AND tag = ?', ['dtorry/oauth2-slim', 'latest'])
+      expect_any_instance_of(Sinatra::Application).to receive(:fetch_with_auth) do |_app, method, upstream_path, query_params, _headers|
+        expect(method).to eq(:get)
+        expect(upstream_path).to eq(path)
+        expect(query_params).to be_nil
+        response
+      end
+
+      get "#{path}?ns=docker.io"
+
+      expect(last_response.status).to eq(200)
+      cached_uri = DB.execute('SELECT uri FROM cache_entries WHERE image_name = ? AND tag = ?', ['dtorry/oauth2-slim', 'latest']).flatten
+      expect(cached_uri).to eq([path])
+    end
+
     it 'proxies postgres:16 manifest requests' do
       # Test manifest pull for library/postgres:16
       get '/v2/library/postgres/manifests/16', {}, {

@@ -201,6 +201,8 @@ helpers do
     resp
   end
   def parse_docker_uri(uri)
+    uri = uri.to_s.split('?', 2).first
+
     # Parse Docker registry URI to extract image_name and tag
     # Examples:
     # /v2/library/postgres/manifests/16 -> image_name: "library/postgres", tag: "16"
@@ -237,10 +239,14 @@ helpers do
     { image_name: image_name, tag: tag }
   end
 
+  def registry_cache_uri
+    request.path_info.to_s.dup.force_encoding(Encoding::UTF_8)
+  end
+
   def cached?
     result = DB.execute(
       "SELECT cache_time FROM cache_entries WHERE uri = ? AND cache_time > ?",
-      [request.fullpath, Time.now.to_i - TTL]
+      [registry_cache_uri, Time.now.to_i - TTL]
     )
     !result.empty?
   end
@@ -248,7 +254,7 @@ helpers do
   def cache_get
     result = DB.execute(
       "SELECT status, headers, body FROM cache_entries WHERE uri = ? AND cache_time > ?",
-      [request.fullpath, Time.now.to_i - TTL]
+      [registry_cache_uri, Time.now.to_i - TTL]
     ).first
     
     return nil unless result
@@ -266,7 +272,7 @@ helpers do
   end
 
   def save_cache(status, headers, body)
-    parsed = parse_docker_uri(request.fullpath)
+    parsed = parse_docker_uri(registry_cache_uri)
 
     # Skip caching system/API and non-tag entries to avoid polluting the cache list
     return if parsed[:image_name].nil? || parsed[:tag].nil?
@@ -279,7 +285,7 @@ helpers do
     DB.execute(
       "INSERT OR REPLACE INTO cache_entries (uri, image_name, tag, cache_time, status, content_type, headers, body, digest) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [
-        request.fullpath,
+        registry_cache_uri,
         parsed[:image_name],
         parsed[:tag],
         Time.now.to_i,
@@ -652,9 +658,8 @@ get '/*' do
     return body
   end
 
-  upstream_path = request.path_info
-  upstream_full_path = request.query_string.empty? ? upstream_path : "#{upstream_path}?#{request.query_string}"
-  resp = fetch_with_auth(:get, upstream_full_path, nil, pass_headers)
+  upstream_path = registry_cache_uri
+  resp = fetch_with_auth(:get, upstream_path, nil, pass_headers)
   
   # Return response
   save_cache(resp.status, resp.headers, resp.body) if resp.status == 200

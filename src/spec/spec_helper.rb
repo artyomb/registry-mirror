@@ -5,11 +5,20 @@ require 'rspec-benchmark'
 require 'rack/test'
 require 'async/rspec'
 require 'rack/builder'
+require 'fileutils'
+require 'tmpdir'
 
 require 'simplecov'
 SimpleCov.start
 
 ENV['DB_URL'] = 'sqlite::memory:'
+TEST_CACHE_DIR = Dir.mktmpdir('registry-mirror-test-cache')
+ENV['CACHE_DIR'] = TEST_CACHE_DIR
+
+at_exit do
+  FileUtils.remove_entry(TEST_CACHE_DIR) if File.directory?(TEST_CACHE_DIR)
+end
+
 $app = Rack::Builder.parse_file(File.expand_path 'config.ru')
 
 module Rack::Test::JHelpers
