@@ -271,6 +271,39 @@ helpers do
     ).first
   end
 
+  def delete_cache_entries(image_name, tag)
+    DB.execute(
+      "DELETE FROM cache_entries WHERE image_name = ? AND tag = ?",
+      [image_name, tag]
+    )
+    DB.changes
+  end
+
+  def docker_hub_webhook_token
+    ENV.fetch('DOCKER_HUB_WEBHOOK_TOKEN', '').to_s
+  end
+
+  def docker_hub_webhook_authorized?
+    expected = docker_hub_webhook_token
+    return true if expected.empty?
+
+    provided = params['token'].to_s
+    return false if provided.empty? || provided.bytesize != expected.bytesize
+
+    Rack::Utils.secure_compare(provided, expected)
+  end
+
+  def docker_hub_repo_name(payload)
+    repo_name = payload.dig('repository', 'repo_name').to_s.strip
+    return repo_name unless repo_name.empty?
+
+    namespace = payload.dig('repository', 'namespace').to_s.strip
+    name = payload.dig('repository', 'name').to_s.strip
+    return nil if namespace.empty? || name.empty?
+
+    "#{namespace}/#{name}"
+  end
+
   def save_cache(status, headers, body)
     parsed = parse_docker_uri(registry_cache_uri)
 
@@ -634,13 +667,48 @@ post '/cache/remove' do
     return JSON.dump({ error: 'image and tag are required' })
   end
 
-  removed = DB.execute(
-    "DELETE FROM cache_entries WHERE image_name = ? AND tag = ?",
-    [image, tag]
-  )
+  removed = delete_cache_entries(image, tag)
 
   body JSON.dump({
     remove: {
+      image: image,
+      tag: tag,
+      entries_removed: removed,
+      timestamp: Time.now.iso8601
+    }
+  })
+end
+
+post '/webhooks/docker-hub' do
+  content_type 'application/json'
+
+  unless docker_hub_webhook_authorized?
+    status 403
+    return JSON.dump({ error: 'forbidden' })
+  end
+
+  raw_body = request.body.read.to_s
+
+  begin
+    payload = JSON.parse(raw_body)
+  rescue JSON::ParserError
+    status 400
+    return JSON.dump({ error: 'invalid json payload' })
+  end
+
+  image = docker_hub_repo_name(payload)
+  tag = payload.dig('push_data', 'tag').to_s.strip
+
+  if image.to_s.strip.empty? || tag.empty?
+    status 400
+    return JSON.dump({ error: 'repository repo_name and push_data tag are required' })
+  end
+
+  removed = delete_cache_entries(image, tag)
+
+  body JSON.dump({
+    webhook: {
+      source: 'docker_hub',
       image: image,
       tag: tag,
       entries_removed: removed,

@@ -1,4 +1,28 @@
 RSpec.describe 'Integration Tests' do
+  def docker_hub_webhook_payload(overrides = {})
+    payload = {
+      'push_data' => {
+        'pushed_at' => 1_417_566_161,
+        'pusher' => 'trustedbuilder',
+        'tag' => 'latest'
+      },
+      'repository' => {
+        'namespace' => 'dtorry',
+        'name' => 'codex2vllm',
+        'repo_name' => 'dtorry/codex2vllm'
+      }
+    }
+
+    payload.merge(overrides)
+  end
+
+  def with_env(name, value)
+    original = ENV[name]
+    ENV[name] = value
+    yield
+  ensure
+    ENV[name] = original
+  end
 
   describe 'Service basics' do
     it 'respond to Healthcheck' do
@@ -108,6 +132,66 @@ RSpec.describe 'Integration Tests' do
       }
       expect([200, 401]).to include(last_response.status)
       expect(last_response.content_type).to include('application')
+    end
+  end
+
+  describe 'Docker Hub webhooks' do
+    it 'removes cached entries for the pushed repository tag' do
+      DB.execute('DELETE FROM cache_entries WHERE image_name = ? AND tag = ?', ['dtorry/codex2vllm', 'latest'])
+      DB.execute(
+        'INSERT INTO cache_entries (uri, image_name, tag, cache_time, status, content_type, headers, body, digest) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [
+          '/v2/dtorry/codex2vllm/manifests/latest',
+          'dtorry/codex2vllm',
+          'latest',
+          Time.now.to_i,
+          200,
+          'application/vnd.oci.image.index.v1+json',
+          JSON.dump({ 'Content-Type' => 'application/vnd.oci.image.index.v1+json' }),
+          '{"schemaVersion":2}',
+          'sha256:test'
+        ]
+      )
+
+      post '/webhooks/docker-hub', JSON.dump(docker_hub_webhook_payload), { 'CONTENT_TYPE' => 'application/json' }
+
+      expect(last_response.status).to eq(200)
+      expect(JSON.parse(last_response.body).dig('webhook', 'entries_removed')).to eq(1)
+      count = DB.execute('SELECT COUNT(*) FROM cache_entries WHERE image_name = ? AND tag = ?', ['dtorry/codex2vllm', 'latest']).first[0]
+      expect(count).to eq(0)
+    end
+
+    it 'accepts namespace and name when repo_name is absent' do
+      payload = docker_hub_webhook_payload(
+        'repository' => {
+          'namespace' => 'dtorry',
+          'name' => 'codex2vllm'
+        }
+      )
+
+      post '/webhooks/docker-hub', JSON.dump(payload), { 'CONTENT_TYPE' => 'application/json' }
+
+      expect(last_response.status).to eq(200)
+      parsed = JSON.parse(last_response.body)
+      expect(parsed.dig('webhook', 'image')).to eq('dtorry/codex2vllm')
+      expect(parsed.dig('webhook', 'tag')).to eq('latest')
+    end
+
+    it 'rejects malformed webhook payloads' do
+      post '/webhooks/docker-hub', '{"broken"', { 'CONTENT_TYPE' => 'application/json' }
+
+      expect(last_response.status).to eq(400)
+      expect(JSON.parse(last_response.body)).to eq('error' => 'invalid json payload')
+    end
+
+    it 'supports an optional webhook token' do
+      with_env('DOCKER_HUB_WEBHOOK_TOKEN', 'secret-token') do
+        post '/webhooks/docker-hub?token=wrong', JSON.dump(docker_hub_webhook_payload), { 'CONTENT_TYPE' => 'application/json' }
+        expect(last_response.status).to eq(403)
+
+        post '/webhooks/docker-hub?token=secret-token', JSON.dump(docker_hub_webhook_payload), { 'CONTENT_TYPE' => 'application/json' }
+        expect(last_response.status).to eq(200)
+      end
     end
   end
 end
